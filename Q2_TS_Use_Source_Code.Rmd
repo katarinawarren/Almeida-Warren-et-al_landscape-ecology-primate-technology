@@ -1,0 +1,440 @@
+---
+title: "Almeida-Warren et al. 2022 - Tool site use"
+author: "KAW"
+date: "24 June 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Q2. Tool Site Use Frequency
+
+Descriptive statistics on frequency of tool site use relative to availability of nuts, raw materials, tools, wild food trees, distance to nearest nest cluster and distance to nearest river.
+
+### Project prep
+
+```{r, message=FALSE, warning=FALSE}
+
+# Load libraries
+
+# manipulating dataframes
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+#tables
+library(sjPlot) # tab_model
+library(flextable) # prep for docx output
+library(broom) # glm and drop1 tidy outputs
+
+#plotting
+library(ggplot2)
+library(ggpubr) # ggarrange combine multiple plots to une figure
+library(cowplot) # facet plots with legend
+library(Cairo) # image export
+
+```
+
+```{r}
+#load data
+
+# Quadrat data
+Slc_DF <- read.csv("TS_Selection_DF.csv")
+
+# Tool site data
+TS_DF <- read.csv("Tool_Sites.csv")
+
+# Working tools (i.e. stones that are still suitable for nut-cracking)
+Tools_DF <- read.csv("NC_AH_tools.csv")
+
+# Data from tool site activity monitoring
+TS_act <- read.csv("TS_activity.csv")
+
+```
+
+
+## Data prep
+
+```{r}
+# select activity variables
+
+Act_DF <- TS_act %>% 
+  select (c(Week, Q_ID, Recent_activity, Nut_count, Num_regime))
+
+# tally tools by Q_ID (Quadrat ID)
+TS_Tools <- Tools_DF %>% group_by (Q_ID) %>% tally() %>% mutate (Tools = n) %>% select (c(Q_ID, Tools))
+  
+# Join DFs
+
+Act_DF <- Act_DF %>% left_join (TS_DF %>% select(c(Q_ID, Status)), by = "Q_ID")
+
+# subset data to active tool sites (Status = "Active")
+
+Frq_DF <- Act_DF %>% filter (Status == "ACTIVE")
+
+# summarise events by Q_ID
+
+n_events <- Frq_DF %>% filter(Recent_activity == "Y") %>% group_by(Q_ID) %>% 
+                     summarise(n_events = n())
+n_obs <- Frq_DF %>% drop_na(Recent_activity) %>% group_by(Q_ID) %>% 
+                     summarise(n_obs = n())
+
+# summarise Nut_count, Num_regime
+
+Frq_DF <- Frq_DF %>% group_by(Q_ID) %>% summarise(Nut_mean = mean(Nut_count, na.rm = TRUE),
+                                                  Reg_mean = mean (Num_regime, na.rm = TRUE))
+
+# Join DFs
+
+Frq_DF <- Frq_DF %>% left_join(n_obs, by = "Q_ID") %>% left_join(n_events, by = "Q_ID")
+
+Frq_DF <- Frq_DF %>% left_join (TS_Tools, by = "Q_ID")
+
+Frq_DF <- Frq_DF %>% left_join (Slc_DF %>% select(c(Q_ID, RM, RM_S3_S5, Wfood_2DBH, Wfood_Fr, Wfood_THV, Nest_dist, River_dist)), by = "Q_ID")
+
+
+# Remove tool sites that were monitored for less than 10 weeks
+
+Frq_DF <- Frq_DF %>% filter (n_obs > 10)
+  
+```
+
+
+```{r}
+# Check data distribution
+
+Frq_DF %>% distinct(Q_ID, .keep_all = TRUE) %>% select(n_obs) %>% group_by(n_obs) %>% summarise(n = n())
+```
+
+Observations:
+
+- Unequal number of observations per tool site
+
+```{r}
+# Scale n_events to n_obs
+
+Frq_DF <- Frq_DF %>% mutate (prop_events = n_events/n_obs)
+
+```
+
+
+```{r}
+# Check data distribution
+
+Frq_DF %>% distinct(Q_ID, .keep_all = TRUE) %>% select(n_events, prop_events) %>% group_by(n_events, prop_events) %>% summarise(n = n())
+```
+
+Observations:
+
+- Should recode to 2 categories: <0.15 (n = 10; n_events <= 2) vs. =>0.15 (n = 7; n_events > 2)
+
+```{r}
+# Create new variables for the two categorical options
+
+Frq_DF <- Frq_DF %>% mutate(FreqLH = case_when (prop_events < 0.15 ~ "Low",
+                                                prop_events >= 0.15 ~ "High"))
+
+```
+
+
+```{r}
+# Reorder variables
+
+Frq_DF <- Frq_DF %>% relocate(c(n_obs, n_events, prop_events, FreqLH), .before = Nut_mean)
+
+```
+
+
+## Data exploration - Full Data
+
+## Inspect DF
+
+```{r}
+str(Frq_DF)
+```
+
+DF is composed of 17 observations. Each row represents an individual tool site.
+
+```{r}
+#check for missing values
+
+colSums(is.na(Frq_DF))
+```
+
+There are no NA's
+
+
+
+```{r}
+# Summarise data by low vs. high frequency sites
+
+#Low frequency sites
+
+DS_Low <- Frq_DF %>% select(-c(Q_ID:prop_events)) %>% filter(FreqLH == "Low") %>% gather("Variables", "value", 2:10) %>% group_by(Variables) %>% 
+  summarise(minL = min(value),
+            maxL = max(value),
+            meanL = mean(value),
+            sdL = sd(value),
+            medianL = median(value),
+            IQRL = IQR(value))
+
+#High frequency sites
+
+DS_High <- Frq_DF %>% select(-c(Q_ID:prop_events)) %>% filter(FreqLH == "High") %>% gather("Variables", "value", 2:10) %>% group_by(Variables) %>% 
+  summarise(minH = min(value),
+            maxH = max(value),
+            meanH = mean(value),
+            sdH = sd(value),
+            medianH = median(value),
+            IQRH = IQR(value))
+
+# Join DFs
+
+DS_Freq <- DS_Low %>% left_join(DS_High, by = "Variables") %>% mutate_if(is.numeric, round, 3)
+
+DS_Freq
+
+# Create table
+
+TS_Use_DS_Tab <- flextable(DS_Freq)
+
+print(TS_Use_DS_Tab, preview = "docx")
+
+```
+
+
+## Plots
+
+### overview boxplots
+
+```{r}
+
+#create overview boxplots
+
+Frq_DF %>% group_by (FreqLH) %>% gather("Variables", "value", 6:15) %>% ggplot(aes(as.factor(FreqLH), value)) + 
+    geom_boxplot() + geom_jitter(alpha = 0.1) +
+    facet_wrap(~Variables, scales = 'free_y')
+```
+
+
+### formatted boxplots using ggarrange
+
+```{r}
+
+#set plot theme
+
+theme_bp <- function(){
+
+theme_classic() + 
+    theme(legend.position = "none", panel.grid.major.x = element_blank(),
+          axis.text=element_text(size=12), axis.title = element_text(size=14), 
+          axis.title.y = element_text(margin = margin(t = 0, r = 10, b = 0, l = 0),
+                                      colour = "grey 30"), 
+          axis.title.x = element_text(margin = margin(t = 3, r = 0, b = 0, l = 0),
+                                      colour = "grey 30"))
+  
+}
+```
+
+```{r}
+# Nut mean
+
+BP_Nut <- Frq_DF %>% 
+  select(c("FreqLH", "Nut_mean")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Nut_mean, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("\nMean nut availability") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+  
+```
+
+```{r}
+# Regime
+
+BP_Regime <- Frq_DF %>% 
+  select(c("FreqLH", "Reg_mean")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Reg_mean, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("Mean number\n of regime") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+```{r}
+
+# RM
+
+BP_RM <- Frq_DF %>% 
+  select(c("FreqLH", "RM")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, RM, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("\nRaw materials") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+
+```{r}
+
+# RM_S3_S5
+
+BP_RM35 <- Frq_DF %>% 
+  select(c("FreqLH", "RM_S3_S5")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, RM_S3_S5, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("Raw materials\n (size class 3 - 5)") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+```{r}
+
+# Tools
+
+BP_Tools <- Frq_DF %>% 
+  select(c("FreqLH", "Tools")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Tools, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("\nTools") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+
+```{r}
+
+# Food trees
+
+BP_FT <- Frq_DF %>% 
+  select(c("FreqLH", "Wfood_2DBH")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Wfood_2DBH, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("\nWild food trees") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+
+```
+
+```{r}
+
+#Fr trees
+
+BP_FrT <- Frq_DF %>% 
+  select(c("FreqLH", "Wfood_Fr")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Wfood_Fr, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  xlab("Frequency of events") + ylab("\nWild fruit trees") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+```{r}
+
+# Nest_dist
+
+BP_Nest <- Frq_DF %>% 
+  select(c("FreqLH", "Nest_dist")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, Nest_dist, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  scale_y_continuous(breaks = c(100,200,300,400,500), labels = c(0.1, 0.2, 0.3, 0.4, 0.5)) +
+  xlab("Frequency of events") + ylab("Distance to nearest\n nest cluster (km)") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+```{r}
+
+# River_dist
+
+BP_River <- Frq_DF %>% 
+  select(c("FreqLH", "River_dist")) %>%
+  group_by (FreqLH) %>%
+  ggplot(aes(FreqLH, River_dist, fill=FreqLH)) + 
+  geom_boxplot() +
+  geom_jitter(alpha = 0.2, size = 4) +
+  stat_summary(fun=mean, colour="black", geom="point", shape=18, size=4) +
+  theme_bp() +
+  scale_x_discrete(limits=c("Low", "High")) +
+  scale_y_continuous(breaks = c(100,200,300), labels = c(0.1, 0.2, 0.3)) +
+  xlab("Frequency of events") + ylab("Distance to\n nearest river (km)") +
+  scale_fill_grey(start = 1, end = 0.4)  +
+  theme(plot.margin = unit(c(1.5,1.5,1.5,1.5), "lines"))
+
+```
+
+```{r}
+
+# Combine boxplots of 6 main variables
+
+BP_R1 <- ggarrange (BP_Tools, BP_RM35, BP_Nut, 
+           ncol = 3, labels = c("a", "b", "c"),
+           legend = NULL,
+           align = "hv",
+           hjust = -2.8, vjust = 2)
+
+BP_R2 <- ggarrange (BP_FT, BP_Nest, BP_River,
+           ncol = 3, labels = c("d", "e", "f"),
+                   legend = NULL,
+                       align = "hv",
+                       hjust = -2.8, vjust = 2)
+
+BP_ReUse <- ggarrange (BP_R1, BP_R2,
+           nrow = 2, align = "hv")
+
+# Save
+
+ggsave("TS_FreqUse_BP.tiff", BP_ReUse, type = "cairo", scale = 3, width = 3, height = 2, dpi = 300)
+
+BP_ReUse
+
+```

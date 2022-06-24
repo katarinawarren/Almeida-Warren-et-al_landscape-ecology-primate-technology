@@ -1,0 +1,986 @@
+---
+title: "Almeida-Warren et al. 2022 - Tool site inactivity"
+author: "KAW"
+date: "24 June 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Q3. Tool Site Inactivity
+
+Analysis of tool site inactivity at the Quadrat level using binomial GLM (response: abandoned(1)/active(0) nut-cracking site; predictors of interest: prod nut tree, raw materials, tools, wild food trees)
+
+### Project prep
+
+```{r, message=FALSE, warning=FALSE}
+# Load libraries
+
+# manipulating dataframes
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+# model exploration
+library(lattice) # cleveland dotplot
+library(corrplot) # correlation
+library(car) # vif
+
+
+# model stats
+library(MuMIn) # pseudo-R2; AICc
+
+#tables
+library(sjPlot) # tab_model
+library(flextable) # prep for docx output
+library(broom) # glm and drop1 tidy outputs
+
+#plotting
+library(ggplot2)
+library(ggeffects) # ggpredict
+library(visreg) # glm models
+library(ggpubr) # ggarrange combine multiple plots to une figure
+library(cowplot) # facet plots with legend
+library(Cairo) # image export
+
+```
+
+```{r }
+#load data
+
+# Quadrat data
+Slc_DF <- read.csv("TS_Selection_DF.csv")
+
+# Tool site data
+TS_DF <- read.csv("Tool_Sites.csv")
+
+# Working tools (i.e. stones that are still suitable for nut-cracking)
+Tools_DF <- read.csv("NC_AH_tools.csv")
+
+# Data from tool site monitoring
+Monitoring_DF <- read.csv("TS_monitoring_DF.csv")
+
+
+```
+
+```{r}
+#Define plot theme
+
+theme_BMS <- function(){
+  
+  theme_light() + theme(legend.text = element_text (size = 14), 
+                     legend.title = element_text(size = 16), 
+                     panel.grid = element_blank(), 
+                     axis.text = element_text(size=12, colour = "grey 20"), 
+                     axis.title = element_text(size=14), 
+                     axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                                 b = 0, l = 0),
+                                                 colour = "grey 20"), 
+                     axis.title.x = element_text(margin = margin(t = 3, r = 0, 
+                                                                 b = 0, l = 0),
+                                                 colour = "grey 20"),
+                     axis.ticks = element_line(colour = "grey 20", size = 0.5),
+                     panel.border = element_rect(colour = "grey 20", fill=NA, size = 1),
+                     strip.text.x = element_text(size = 18, colour = NULL, 
+                                                 angle = 0),
+                     strip.text.y = element_text(size = 18, colour = NULL, 
+                                                 angle = 0))
+}
+
+
+
+```
+
+## Data prep
+
+```{r}
+# select Quadrat variables
+
+Abn_DF <- Slc_DF %>% 
+  filter (TS_Pres == 1) %>%
+  select (c(Q_ID, RM, RM_S3_S5, Wfood_2DBH, Wfood_Fr))
+  
+# tally tools by Q_ID
+TS_Tools <- Tools_DF %>% group_by (Q_ID) %>% tally() %>% mutate (Tools = n) %>% select (c(Q_ID, Tools))
+
+# summarise Nut availability data
+
+Nut_availability <- Monitoring_DF %>%
+                     drop_na(Nut_count) %>%
+                     group_by(Q_ID) %>%         
+                     summarise(N_obs = n(),
+                               Nut_mean = mean(Nut_count),
+                               Nut_sd = sd(Nut_count),
+                               Nut_median = median (Nut_count),
+                               Nut_max = max (Nut_count))
+
+# Join DFs
+Abn_DF <- Abn_DF %>% left_join (TS_Tools, by = "Q_ID")
+
+Abn_DF <- Abn_DF %>% left_join (TS_DF %>% select(c(Q_ID, Status)), by = "Q_ID")
+
+Abn_DF <- Abn_DF %>% left_join (Nut_availability %>% select(c(Q_ID, N_obs, Nut_mean, Nut_median, Nut_max)), by = "Q_ID")
+
+# Recode Status to binomial variable
+
+Abn_DF <- Abn_DF %>% mutate(Inactive = case_when (Status == "ACTIVE" ~ 0,
+                                                   Status == "INACTIVE" ~ 1))
+  
+```
+
+
+```{r}
+# Check data distribution
+
+Abn_DF %>% select(Inactive) %>% group_by(Inactive) %>% summarise(n = n())
+```
+
+Observations:
+
+- 24 (~60%) active sites; 16 (~40%) Inactive sites
+
+```{r}
+# Reorder variables
+
+Abn_DF <- Abn_DF %>% relocate(c(Inactive, Nut_mean, Nut_median, Nut_max), .before = RM)
+```
+
+
+
+## Data exploration - Full Data
+
+## Inspect DF
+
+```{r}
+str(Abn_DF)
+```
+
+DF is composed of 40 observations. Each row represents an individual Quadrat. Inactive is binomial and is coded as 0 (active) and 1 (inactive); All other variables are quantitative.
+
+```{r}
+#check for missing values
+
+colSums(is.na(Abn_DF))
+```
+
+There are no NA's
+
+## Check for outliers
+
+### Barplots
+
+```{r}
+
+Abn_DF %>% select (-Status) %>% group_by (Inactive) %>% gather("Variables", "value", 3:10) %>% ggplot(aes(as.factor(Inactive), value)) + 
+    geom_boxplot() + geom_jitter(alpha = 0.1) +
+    facet_wrap(~Variables, scales = 'free_y')
+
+```
+
+Observations:
+
+- Distributions look reasonable; possible outlier in RM, RM_S3_S5
+
+### Cleveland dotplots
+
+```{r}
+# lattice version
+
+dotplot(as.matrix(Abn_DF[,c(3:10)]), groups = FALSE,
+        strip = strip.custom(bg = 'white',
+        par.strip.text = list(cex = 0.8)),
+       scales = list(x = list(relation = "free",
+                              draw = TRUE),
+                     y = list(relation = "free", 
+                              draw = FALSE)),
+        col = 1, cex  = 0.5, pch = 16,
+        xlab = "Data range",
+        ylab = "Order of observations")
+
+```
+
+
+Observations:
+
+- Visible outlier in RM; RM_S3_S5
+
+
+Check of notes and original data suggests outliers are real observations:
+
+- RM/RM_S3_S5 - high value @ Obs 11 (TS19_Q0) & 28 (TS34_Q0) due to human-made stone pile resulting from historical forest clearing for planting crops;
+
+
+## Check data distribution
+
+```{r}
+
+Abn_DF %>% select (c(-1)) %>% gather("Variables", "value", 1:9) %>% ggplot(aes(value)) + 
+    geom_histogram() + 
+    facet_wrap(~Variables, scales = "free")
+
+```
+
+
+Observations:
+
+- Single outliers in RM, RM_S3_S5 & Tools
+
+
+## Check multicollinearity among covatiates
+
+### Pairplots
+
+```{r}
+
+# Creat DF of explanatory variables
+
+Abn_ExpVar <- Abn_DF %>% dplyr::select (-c(Q_ID, Inactive, Status, N_obs))
+
+# Correlation panels
+
+panel.cor.pearson <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y, method = "pearson"), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 1/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * abs(r))
+}
+
+panel.cor.spearman <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y, method = "spearman"), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 1/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * abs(r))
+}
+
+# Pairplots
+
+## pearson correlation
+
+PairPlots_AbnP <- pairs (Abn_ExpVar,
+                        lower.panel = panel.cor.pearson)
+
+PairPlots_AbnP
+
+
+## spearman correlation
+
+PairPlots_AbnS <- pairs (Abn_ExpVar,
+                        lower.panel = panel.cor.spearman)
+
+PairPlots_AbnS
+
+```
+
+
+"(...)Spearman rank correlation makes no assumptions about linearity in the relationship between the two variables (Zar, 1996).Booth et al. (1994) suggest that correlations between pairs of variables with magnitudes greater than ±0.5 indicate high collinearity, and we use this rough rule-of-thumb here." (Zuur et al. 2009, p. 473)
+
+Observations:
+
+Excluding related pairs of variables (Nut_ ~ Nut_; RM ~ RM_; RM(_) ~ Tools; Wfood_2DBH ~ Wfood_Fr):
+
+- Pearson cor range: [-0.13, 0.21] (Under ±0.5)
+- Spearman cor range: [-0.13, 0.28] (Under ±0.5)
+
+
+CONCLUSIONS FROM DATA EXPLORATION:
+
+- No NA's
+- Potential outlier in Tools and RM_ variables
+- No collinearity issues between unrelated variables
+- Overall, data exploration did not reveal any unusual patters
+
+
+#Variable Selection
+
+## Nut_ variables
+
+Nut_mean; Nut_median; Nut_max -> Choosing Nut_mean, because data distribution is more normal
+
+## RM, RM_S3_S5, Tools
+
+- RM as default variable
+- Fit 1 other models with RM replaced by RM_S3_S5
+- Fit 1 other model with RM replaced by Tools
+
+## Wfood_2DBH; Wfood_Fr
+
+- Choosing Wfood_DBH as default variable
+- Fit a model with Wfood_2DBH replaced by Wfood_Fr
+
+#Model 1
+
+binomial GLM (response: yes/no inactive; predictors: mean nut availability, raw materials, wild food trees)
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(Inactive ~ Nut_mean + RM + Wfood_2DBH, data = Abn_DF))
+
+```
+
+Observations:
+
+- VIF ~1 for all variables; low co-variance.
+- All covariates can be used in the model
+
+
+```{r}
+Abn_GLM_M1 <- glm(as.factor(Inactive) ~ Nut_mean + RM + Wfood_2DBH, data = Abn_DF, family = binomial(link = "logit"))
+
+summary(Abn_GLM_M1)
+
+```
+
+## Compare with null model
+
+```{r}
+# Null model
+
+Abn_GLM_M1_Null <- glm(as.factor(Inactive) ~ 1, data = Abn_DF, family = binomial(link = "logit"))
+
+
+# anova Null vs. Full model
+
+AD_M1 <- anova(Abn_GLM_M1_Null, Abn_GLM_M1, test = "LRT")
+
+AD_M1
+```
+
+Observations:
+
+p < 0.05; ONLY JUST! - can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1 <- drop1(Abn_GLM_M1, test = "Chisq")
+
+d1_M1
+```
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1 <- tidy(Abn_GLM_M1)
+
+# replace statistic and p with values from drop1
+
+Tab_M1$statistic <- d1_M1$LRT
+
+Tab_M1$p.value <- d1_M1$`Pr(>Chi)`
+
+Tab_M1 <- Tab_M1 %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1
+
+#create table
+
+Abn_Tab_M1 <- flextable(Tab_M1)
+
+print(Abn_Tab_M1, preview = "docx")
+
+```
+
+# Model 1a
+
+binomial GLM (response: yes/no inactive; predictors: mean nut availability, raw materials (size class 3-5), wild food trees)
+
+## Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(Inactive ~ Nut_mean + RM_S3_S5 + Wfood_2DBH, data = Abn_DF))
+```
+
+
+Observations:
+-  < 1.1 for all variables; low co-variance.
+- All covariates can be used in the model
+
+
+## Fit M1a
+
+```{r}
+Abn_GLM_M1a <- glm(as.factor(Inactive) ~ Nut_mean + RM_S3_S5 + Wfood_2DBH, data = Abn_DF, family = binomial(link = "logit"))
+
+summary(Abn_GLM_M1a)
+```
+
+## Compare with null model
+
+```{r}
+# Null Model
+
+Abn_GLM_M1a_Null <- glm(as.factor(Inactive) ~ 1, family = binomial(link = "logit"), data = Abn_DF)
+
+# anova Null vs. Full model
+
+AD_M1a <- anova(Abn_GLM_M1a_Null, Abn_GLM_M1a, test = "LRT")
+
+AD_M1a
+```
+
+Observations:
+
+p > 0.05 - cannot reject null model.
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1a <- drop1(Abn_GLM_M1a, test = "Chisq")
+
+d1_M1a
+```
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1a <- tidy(Abn_GLM_M1a)
+
+# replace statistic and p with values from drop1
+
+Tab_M1a$statistic <- d1_M1a$LRT
+
+Tab_M1a$p.value <- d1_M1a$`Pr(>Chi)`
+
+Tab_M1a <- Tab_M1a %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1a
+
+#create table
+
+Abn_Tab_M1a <- flextable(Tab_M1a)
+
+print(Abn_Tab_M1a, preview = "docx")
+
+```
+
+
+
+#Model 1a
+
+binomial GLM (response: yes/no inactive; predictors: mean nut availability, tools, wild food trees)
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(Inactive ~ Nut_mean + Tools + Wfood_2DBH, data = Abn_DF))
+
+```
+
+Observations:
+
+- VIF ~1 for all variables; low co-variance.
+- All covariates can be used in the model
+
+
+```{r}
+Abn_GLM_M1b <- glm(as.factor(Inactive) ~ Nut_mean + Tools + Wfood_2DBH, data = Abn_DF, family = binomial(link = "logit"))
+
+summary(Abn_GLM_M1b)
+
+```
+
+## Compare with null model
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1b <- anova(Abn_GLM_M1_Null, Abn_GLM_M1b, test = "LRT")
+
+AD_M1b
+```
+
+Observations:
+
+p < 0.05; can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1b <- drop1(Abn_GLM_M1b, test = "Chisq")
+
+d1_M1b
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1b <- fitted(Abn_GLM_M1b)
+Resid_M1b <- resid(Abn_GLM_M1b, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1b, y = Resid_M1b,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+
+Observations:
+
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#Nut_mean
+
+plot(x = Abn_DF$Nut_mean,
+y = Resid_M1b,
+xlab = "Nut_mean",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Tools
+
+plot(x = Abn_DF$Tools,
+y = Resid_M1b,
+xlab = "Tools",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+
+```{r}
+#WFood_2DBH
+
+plot(x = Abn_DF$Wfood_2DBH,
+y = Resid_M1b,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for one extreme value
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Abn_GLM_M1b),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+Observations:
+
+- Max CD < 0.5; No evidence of influential observations
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1b <- tidy(Abn_GLM_M1b)
+
+# replace statistic and p with values from drop1
+
+Tab_M1b$statistic <- d1_M1b$LRT
+
+Tab_M1b$p.value <- d1_M1b$`Pr(>Chi)`
+
+Tab_M1b <- Tab_M1b %>% mutate_if(is.numeric, round, 3)
+
+#create table
+
+Abn_Tab_M1b <- flextable(Tab_M1b)
+
+print(Abn_Tab_M1b, preview = "docx")
+
+```
+
+#Model 1b
+
+binomial GLM (response: yes/no inactive; predictors: mean nut availability, raw materials (size class 3 - 5), wild fruit trees)
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(Inactive ~ Nut_mean + RM_S3_S5 + Wfood_Fr, data = Abn_DF))
+
+```
+
+Observations:
+
+- VIF <1.1 for all variables; low co-variance.
+- All covariates can be used in the model
+
+
+```{r}
+Abn_GLM_M1c <- glm(as.factor(Inactive) ~ Nut_mean + RM_S3_S5 + Wfood_Fr, data = Abn_DF, family = binomial(link = "logit"))
+
+summary(Abn_GLM_M1c)
+
+```
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1c <- anova(Abn_GLM_M1_Null, Abn_GLM_M1c, test = "LRT")
+
+AD_M1c
+```
+
+Observations:
+
+p > 0.05 - cannot reject null model
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1c <- drop1(Abn_GLM_M1c, test = "Chisq")
+
+d1_M1c
+```
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1c <- tidy(Abn_GLM_M1c)
+
+# replace statistic and p with values from drop1
+
+Tab_M1c$statistic <- d1_M1c$LRT
+
+Tab_M1c$p.value <- d1_M1c$`Pr(>Chi)`
+
+Tab_M1c <- Tab_M1c %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1c
+
+#create table
+
+Abn_Tab_M1c <- flextable(Tab_M1c)
+
+print(Abn_Tab_M1c, preview = "docx")
+
+```
+
+#Model 1c
+
+binomial GLM (response: yes/no inactive; predictors: mean nut availability, tools, wild fruit trees)
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(Inactive ~ Nut_mean + Tools + Wfood_Fr, data = Abn_DF))
+
+```
+
+Observations:
+
+- VIF <1.1 for all variables; low co-variance.
+- All covariates can be used in the model
+
+
+```{r}
+Abn_GLM_M1d <- glm(as.factor(Inactive) ~ Nut_mean + Tools + Wfood_Fr, data = Abn_DF, family = binomial(link = "logit"))
+
+summary(Abn_GLM_M1d)
+
+```
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1d <- anova(Abn_GLM_M1_Null, Abn_GLM_M1d, test = "LRT")
+
+AD_M1d
+```
+
+Observations:
+
+p > 0.05. Can reject Null model
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1d <- drop1(Abn_GLM_M1d, test = "Chisq")
+
+d1_M1d
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1d <- fitted(Abn_GLM_M1d)
+Resid_M1d <- resid(Abn_GLM_M1d, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1d, y = Resid_M1d,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+
+Observations:
+
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#Nut_mean
+
+plot(x = Abn_DF$Nut_mean,
+y = Resid_M1d,
+xlab = "Nut_mean",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Tools
+
+plot(x = Abn_DF$Tools,
+y = Resid_M1d,
+xlab = "Tools",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+
+```{r}
+#WFood_2DBH
+
+plot(x = Abn_DF$Wfood_2DBH,
+y = Resid_M1d,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for one extreme value
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Abn_GLM_M1d),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+Observations:
+
+- Max CD < 0.7; No evidence of influential observations
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1d <- tidy(Abn_GLM_M1d)
+
+# replace statistic and p with values from drop1
+
+Tab_M1d$statistic <- d1_M1d$LRT
+
+Tab_M1d$p.value <- d1_M1d$`Pr(>Chi)`
+
+Tab_M1d <- Tab_M1d %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1d
+
+#create table
+
+Abn_Tab_M1d <- flextable(Tab_M1d)
+
+print(Abn_Tab_M1d, preview = "docx")
+
+```
+
+#Model 1d
+
+
+# Compare models
+
+## Full-Null summary
+
+```{r}
+# ANOVA
+
+Abn_ANOVA <- bind_rows("Abn_GLM_M1" = tidy(AD_M1), "Abn_GLM_M1a" = tidy(AD_M1a), "Abn_GLM_M1b" = tidy(AD_M1b), "Abn_GLM_M1c" = tidy(AD_M1c), "Abn_GLM_M1d" = tidy(AD_M1d), .id = "Model")
+
+Abn_ANOVA <- Abn_ANOVA %>% mutate_if(is.numeric, round, 3)
+
+Abn_Tab_ANOVA <- flextable(Abn_ANOVA)
+
+print(Abn_Tab_ANOVA, preview = "docx")
+
+Abn_ANOVA 
+
+```
+
+## AIC for small sample size 
+
+[see Burnham and Anderson, 2002]
+
+```{r}
+# AICc
+
+Abn_AIC <- AICc(Abn_GLM_M1, Abn_GLM_M1a, Abn_GLM_M1b, Abn_GLM_M1c, Abn_GLM_M1d)
+
+Abn_AIC <- Abn_AIC %>% mutate(Model = rownames(Abn_AIC)) %>% relocate(Model, .before = "df") %>% mutate_if(is.numeric, round, 3)
+
+Abn_Tab_AIC <- flextable(Abn_AIC)
+
+print(Abn_Tab_AIC, preview = "docx")
+
+```
+
+Abn_GLM_M1a has the lowest AICc - selected as the final model
+
+# Final Model - M1c 
+
+
+## Plots
+
+### M1c
+
+```{r}
+# Nut_mean
+
+Pl_M1b_Nut<- visreg(Abn_GLM_M1b, "Nut_mean", scale = "response",
+                      partial=FALSE, jitter = TRUE, alpha=0.1, 
+                      line = list (col = "grey20"), 
+                      fill = list (fill = "grey90"), 
+                      gg = TRUE) +
+                geom_point(colour = "grey20", shape = 16) + theme_BMS() + 
+                xlab("Mean nut availability") + ylab("Odds of tool site inactivity") +
+                scale_x_continuous()
+
+
+Pl_M1b_Nut
+
+```
+
+```{r}
+# Tools
+
+Pl_M1b_Tools <- visreg(Abn_GLM_M1b, "Tools", scale = "response",
+                        partial=FALSE, jitter = TRUE, alpha=0.1, 
+                        line = list (col = "grey20"), 
+                        fill = list (fill = "grey90"),
+                        gg = TRUE) +
+                  geom_point(colour = "grey20", shape = 16) + theme_BMS() + 
+                  xlab("Number of tools") + ylab("Odds of tool site inactivity") +
+                  scale_x_continuous(breaks = c(0,5,10,15,20,25))
+
+Pl_M1b_Tools
+
+```
+
+
+```{r}
+# Facet plots
+
+Pl_M1b <- ggarrange(Pl_M1b_Nut, Pl_M1b_Tools,
+                   ncol = 2, labels = c("a", "b"),
+                   legend = NULL,
+                       align = "h",
+                       hjust = -0.8)
+
+Pl_M1b
+
+ggsave("TS_Abn_M1b.tiff", Pl_M1b, type = "cairo", scale = 3, width = 2.5, height = 1.5, dpi = 300)
+```
+
+
+

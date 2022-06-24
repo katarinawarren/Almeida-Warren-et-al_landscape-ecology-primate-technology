@@ -1,0 +1,1277 @@
+---
+title: "Almeida-Warren et al. 2022 - Tool site selection"
+author: "KAW"
+date: "24 June 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Q1. Tool Site Selection
+
+Analysis of tool site selection at the Quadrat level using binomial GLM (response: presence/absence of nut-cracking site; predictors of interest: nut trees, raw materials, wild food trees, wild food THV, nest distance, river distance)
+
+### Project prep
+
+```{r, message=FALSE, warning=FALSE}
+# Load libraries
+
+# manipulating dataframes
+library(plyr)
+library(dplyr)
+library(tidyr)
+
+# model exploration
+library(lattice) # cleveland dotplot
+library(corrplot) # correlation
+library(car) # vif
+
+
+# model stats
+library(MuMIn) # pseudo-R2; AICc
+
+#tables
+library(sjPlot) # tab_model
+library(flextable) # prep for docx output
+library(broom) # glm and drop1 tidy outputs
+
+#plotting
+library(ggplot2)
+library(ggeffects) # ggpredict
+library(visreg) # glm models
+library(ggpubr) # ggarrange combine multiple plots to une figure
+library(cowplot) # facet plots with legend
+library(Cairo) # image export
+
+```
+
+```{r }
+#load data
+
+Slc_DF <- read.csv("TS_Selection_DF.csv")
+
+```
+
+```{r}
+#Define plot theme
+
+theme_BMS <- function(){
+  
+  theme_light() + theme(legend.text = element_text (size = 14), 
+                     legend.title = element_text(size = 16), 
+                     panel.grid = element_blank(), 
+                     axis.text = element_text(size=12, colour = "grey 20"), 
+                     axis.title = element_text(size=14), 
+                     axis.title.y = element_text(margin = margin(t = 0, r = 10, 
+                                                                 b = 0, l = 0),
+                                                 colour = "grey 20"), 
+                     axis.title.x = element_text(margin = margin(t = 3, r = 0, 
+                                                                 b = 0, l = 0),
+                                                 colour = "grey 20"),
+                     axis.ticks = element_line(colour = "grey 20", size = 0.5),
+                     panel.border = element_rect(colour = "grey 20", fill=NA, size = 1),
+                     strip.text.x = element_text(size = 18, colour = NULL, 
+                                                 angle = 0),
+                     strip.text.y = element_text(size = 18, colour = NULL, 
+                                                 angle = 0))
+}
+
+
+```
+
+## Data exploration - Full Data
+
+## Inspect DF
+
+```{r}
+str(Slc_DF)
+```
+
+DF is composed of 195 observations. Each row represents an individual Quadrat. TS_Pres is binomial and is coded as 0 (tool site absent) and 1 (tool site present); NT_Count, NT_Fr_Bear, RM, Wfood_..., Tool_Count & RM_S3_S5 are integers; River_dist and Nest_dist are continuous variables.
+
+```{r}
+#check for missing values
+
+colSums(is.na(Slc_DF))
+```
+No NA's in dataframe
+
+## Check for outliers
+
+### Barplots
+
+```{r}
+
+Slc_DF %>% group_by (TS_Pres) %>% gather("Variables", "value", 3:14) %>% ggplot(aes(as.factor(TS_Pres), value)) + 
+    geom_boxplot() + geom_jitter(alpha = 0.1) +
+    facet_wrap(~Variables, scales = 'free_y')
+
+```
+
+Observations:
+
+- No nut-cracking sites occur where nut trees are absent
+- Extreme values identified in RM_ & Wfood_THV
+
+### Cleveland dotplots
+
+```{r}
+# lattice version
+
+library(lattice)
+
+dotplot(as.matrix(Slc_DF[,c(3:14)]), groups = FALSE,
+        strip = strip.custom(bg = 'white',
+        par.strip.text = list(cex = 0.8)),
+       scales = list(x = list(relation = "free",
+                              draw = TRUE),
+                     y = list(relation = "free", 
+                              draw = FALSE)),
+        col = 1, cex  = 0.5, pch = 16,
+        xlab = "Data range",
+        ylab = "Order of observations")
+
+```
+
+```{r}
+# ggplot version
+
+Slc_DF %>% mutate(order = row_number()) %>% group_by(order) %>% gather("Variables", "value", 2:14) %>% 
+  ggplot(aes(x = value, y = order)) +
+    geom_point() +
+    facet_wrap(~Variables, scales = "free_x") +
+    theme_bw() + theme(axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())
+    
+```
+
+Observations:
+
+- Visible outliers in Wfood_THV; RM; RM_S3_S5
+- Possible outliers in other Wfood_ variables
+- Inflated zeros for most variables except River_dist and Nest_dist
+
+Check of notes and original data suggests outliers are real observations:
+
+- RM/RM_S3_S5 - high values due to human-made stone piles resulting from historical forest clearing for planting crops;
+- Wfood_THV - high values come from areas that are THV dominated;
+
+
+## Check data distribution
+
+```{r}
+
+Slc_DF %>% select (c(-1)) %>% gather("Variables", "value", 1:13) %>% ggplot(aes(value)) + 
+    geom_histogram() + 
+    facet_wrap(~Variables, scales = "free")
+
+```
+
+Observations:
+
+- Zero-inflation and overdispersion in RM; RM_S3_S5; Tool_Count; Wfood_THV
+- Few observations with NT_Count or NT_Fr_Bear > 1
+
+### Additional checks of data distribution
+
+```{r}
+# Response variable
+Slc_DF %>% select(c(TS_Pres)) %>%
+                                group_by(TS_Pres) %>%
+                                summarise (n = n())
+
+```
+
+Observations:
+
+- Excess zeros in response variable (TS_Pres) - 40 Tool sites vs. 155 non-tool sites 
+
+```{r}
+# NT_Count and NT_Fr_Bear
+
+table(Slc_DF$NT_Count)
+
+table(Slc_DF$NT_Fr_Bear)
+
+```
+
+Observations:
+
+- High level of data imbalance in both variables
+- Very few observations with NT_Count/NT_Fr_Bear > 1 [n = 13; 11]
+
+
+```{r}
+# Summary of TS_Pres by NT_Count
+
+Slc_DF %>% select(c(TS_Pres, NT_Count)) %>%
+                                group_by(TS_Pres, NT_Count) %>%
+                                summarise (n = n()) %>%
+                                pivot_wider(names_from = NT_Count, values_from = n)
+
+# Summary of TS_Pres by NT_Fr_Bear
+
+Slc_DF %>% select(c(TS_Pres, NT_Fr_Bear)) %>%
+                                group_by(TS_Pres, NT_Fr_Bear) %>%
+                                summarise (n = n()) %>%
+                                pivot_wider(names_from = NT_Fr_Bear, values_from = n)
+
+
+# Summary of TS_Pres where NT_Count > 0
+
+Slc_DF %>% filter (NT_Count > 0) %>% select(c(TS_Pres)) %>%
+                                     group_by(TS_Pres) %>%
+                                     summarise (n = n())
+```
+
+Observations:
+
+- No tool sites (TS_Pres = 1) where NT_Count/NT_Fr_Bear = 0
+- When observations are restricted to Quadrats where nut trees are present data is more balanced in response variabe: 40 Tool sites vs. 42 non-tool sites
+
+Next Steps:
+
+- Subset data to Quadrats where nut trees are present (NT_Count > 0)
+- Check outliers and distributions
+
+## Subset data
+
+```{r}
+# Subset data to Quadrats where nut trees are present (NT_Count > 0)
+
+Slc_NTQ_DF <- Slc_DF %>% filter (NT_Count > 0)
+```
+
+## Data Exploration - NTQ Subset
+
+## Check for outliers
+
+### Barplots
+
+```{r}
+
+Slc_NTQ_DF %>% group_by (TS_Pres) %>% gather("Variables", "value", 3:14) %>% ggplot(aes(as.factor(TS_Pres), value)) + 
+    geom_boxplot() + geom_jitter(alpha = 0.1) +
+    facet_wrap(~Variables, scales = 'free_y')
+
+```
+
+### Cleveland dotplots
+
+```{r}
+
+dotplot(as.matrix(Slc_NTQ_DF), groups = FALSE,
+        strip = strip.custom(bg = 'white',
+        par.strip.text = list(cex = 0.8)),
+        scales = list(x = list(relation = "free"),
+                      y = list(relation = "free"),
+                      draw = FALSE),
+        col = 1, cex  = 0.5, pch = 16,
+        xlab = "Value of the variable",
+        ylab = "Order of observations")
+
+```
+
+```{r}
+# ggplot version
+
+Slc_NTQ_DF %>% mutate(order = row_number()) %>% group_by(order, TS_Pres) %>% gather("Variables", "value", 3:14) %>% 
+  ggplot(aes(x = value, y = order)) +
+    geom_point() +
+    facet_wrap(~Variables, scales = "free_x") +
+    theme_bw() + theme(axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())
+    
+```
+
+Observations:
+
+- Possible extreme outliers in RM; RM_S3_S5; Wfood_10DBH; Wfood_Fr; Wfood_Fr_10DBH
+
+## Check data distribution
+
+```{r}
+
+Slc_NTQ_DF %>% dplyr::select (c(-1)) %>% gather("Variables", "value", 1:13) %>% ggplot(aes(value)) + 
+    geom_histogram() + 
+    facet_wrap(~Variables, scales = "free")
+
+```
+
+Observations:
+
+- Distributions are more reasonable except NT_Count & NT_Fr_Bear
+- RM/RM_S3_S5 still have extreme data points BUT data is correct
+
+
+## Check multicollinearity among covatiates
+
+### Pairplots
+
+```{r}
+
+# Creat DF of explanatory variables
+
+Slc_ExpVar <- Slc_NTQ_DF %>% dplyr::select (-c(Q_ID, TS_Pres, NT_Count, NT_Fr_Bear))
+
+# Correlation panels
+
+panel.cor.pearson <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y, method = "pearson"), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 1/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * abs(r))
+}
+
+panel.cor.spearman <- function(x, y){
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y, method = "spearman"), digits=2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 1/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * abs(r))
+}
+
+# Pairplots
+
+## pearson correlation
+
+PairPlots_SlcP <- pairs (Slc_ExpVar,
+                        lower.panel = panel.cor.pearson)
+
+
+## spearman correlation
+
+PairPlots_SlcS <- pairs (Slc_ExpVar,
+                        lower.panel = panel.cor.spearman)
+
+
+
+```
+
+
+"(...)Spearman rank correlation makes no assumptions about linearity in the relationship between the two variables (Zar, 1996).Booth et al. (1994) suggest that correlations between pairs of variables with magnitudes greater than ±0.5 indicate high collinearity, and we use this rough rule-of-thumb here." (Zuur et al. 2009, p. 473)
+
+Observations:
+
+Excluding related pairs of variables (Nut_ ~ Nut_; RM ~ RM_; RM(_) ~ Tools; Wfood_2DBH ~ Wfood_Fr; etc...):
+
+- Pearson cor range: [-0.36, 0.34] (Under ±0.5)
+
+- Spearman cor range: [-0.49, 0.52] (Under ±0.5)
+
+
+### Additional checks of data distribution
+
+```{r}
+
+# Summary of TS_Pres by NT_Count
+
+Slc_NTQ_DF %>% select(c(TS_Pres, NT_Count)) %>%
+                                group_by(TS_Pres, NT_Count) %>%
+                                summarise (n = n()) %>%
+                                pivot_wider(names_from = NT_Count, values_from = n)
+
+```
+
+Observations:
+
+- Data imbalance still too high between 1 and > 1 nut trees to include in an analysis
+
+CONCLUSIONS FROM DATA EXPLORATION:
+
+- Restrict analysis to quadrats where a nut tree is present + exclude number of nut-trees as a predictor, as this would cause quasi-separation and mask the potential effect of other variables of interest
+
+
+
+#Model 1
+
+binomial GLM (response: presence/absence of nut-cracking site; predictors: raw materials, wild food trees, wild food THV, nest distance, river distance)
+
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(TS_Pres ~ RM + Wfood_2DBH + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF))
+```
+
+VIF < 1.4 for all variables so there is low co-variance.
+
+Observations:
+
+- VIF within normal range, so all covariates can be used in the model
+
+
+
+## Fit M1
+
+```{r}
+Slc_GLM_M1 <- glm(as.factor(TS_Pres) ~ RM + Wfood_2DBH + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF, family = binomial(link = "logit"))
+
+summary(Slc_GLM_M1)
+```
+
+## Compare with null model
+
+```{r}
+# Null Model
+
+Slc_GLM_M1_Null <- glm(as.factor(TS_Pres) ~ 1, family = binomial(link = "logit"), data = Slc_NTQ_DF)
+
+# anova Null vs. Full model
+
+AD_M1 <- anova(Slc_GLM_M1_Null, Slc_GLM_M1, test = "LRT")
+
+AD_M1
+```
+
+Observations:
+p < 0.05; can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1 <- drop1(Slc_GLM_M1, test = "Chisq")
+
+d1_M1
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1 <- fitted(Slc_GLM_M1)
+Resid_M1 <- resid(Slc_GLM_M1, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1, y = Resid_M1,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+Observations:
+
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#RM
+
+plot(x = Slc_NTQ_DF$RM,
+y = Resid_M1,
+xlab = "RM",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_2DBH
+
+plot(x = Slc_NTQ_DF$Wfood_2DBH,
+y = Resid_M1,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_THV
+
+plot(x = Slc_NTQ_DF$Wfood_THV,
+y = Resid_M1,
+xlab = "Wfood_THV",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+```{r}
+#River_dist
+
+plot(x = Slc_NTQ_DF$River_dist,
+y = Resid_M1,
+xlab = "River_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Nest_dist
+
+plot(x = Slc_NTQ_DF$Nest_dist,
+y = Resid_M1,
+xlab = "Nest_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for one extreme value
+
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Slc_GLM_M1),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+
+Observations:
+
+- Max CD < 0.4; No evidence of extreme influential observations
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1 <- tidy(Slc_GLM_M1)
+
+# replace statistic and p with values from drop1
+
+Tab_M1$statistic <- d1_M1$LRT
+
+Tab_M1$p.value <- d1_M1$`Pr(>Chi)`
+
+Tab_M1 <- Tab_M1 %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1
+
+#create table
+
+Slc_Tab_M1 <- flextable(Tab_M1)
+
+print(Slc_Tab_M1, preview = "docx")
+
+```
+
+
+#Model 1a
+
+binomial GLM (response: presence/absence of nut-cracking site; predictors: raw materials (size 3-5), wild food trees, wild food THV, nest distance, river distance)
+
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(TS_Pres ~ RM_S3_S5 + Wfood_2DBH + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF))
+```
+
+
+Observations:
+
+- VIF < 1.4 for all variables
+- VIF within normal range, so all covariates can be used in the model
+
+
+```{r}
+Slc_GLM_M1a <- glm(as.factor(TS_Pres) ~ RM_S3_S5 + Wfood_2DBH + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF, family = binomial(link = "logit"))
+
+summary(Slc_GLM_M1a)
+
+```
+
+## Compare with null model
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1a <- anova(Slc_GLM_M1_Null, Slc_GLM_M1a, test = "LRT")
+
+AD_M1a
+```
+
+Observations:
+
+p < 0.05; can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1a <- drop1(Slc_GLM_M1a, test = "Chisq")
+
+d1_M1a
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1a <- fitted(Slc_GLM_M1a)
+Resid_M1a <- resid(Slc_GLM_M1a, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1a, y = Resid_M1a,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+
+Observations:
+
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#RM_S3_S5
+
+plot(x = Slc_NTQ_DF$RM_S3_S5,
+y = Resid_M1a,
+xlab = "RM_S3_S5",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_2DBH
+
+plot(x = Slc_NTQ_DF$Wfood_2DBH,
+y = Resid_M1a,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_THV
+
+plot(x = Slc_NTQ_DF$Wfood_THV,
+y = Resid_M1a,
+xlab = "Wfood_THV",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#River_dist
+
+plot(x = Slc_NTQ_DF$River_dist,
+y = Resid_M1a,
+xlab = "River_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Nest_dist
+
+plot(x = Slc_NTQ_DF$Nest_dist,
+y = Resid_M1a,
+xlab = "Nest_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for 1 extreme value (same obs. as in GLM_M1)
+
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Slc_GLM_M1a),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+Observations:
+
+- Max CD ~ 0.5; No evidence of influential observations, although Obs 74 [TS7_QW5] is much higher than the others
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+INFO ON OBS 74:
+
+- Inspection of point shows nothing out of the ordinary, and none of the variables themselves are outliers.
+
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1a <- tidy(Slc_GLM_M1a)
+
+# replace statistic and p with values from drop1
+
+Tab_M1a$statistic <- d1_M1a$LRT
+
+Tab_M1a$p.value <- d1_M1a$`Pr(>Chi)`
+
+Tab_M1a <- Tab_M1a %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1a
+
+#create table
+
+Slc_Tab_M1a <- flextable(Tab_M1a)
+
+print(Slc_Tab_M1a, preview = "docx")
+
+```
+
+#Model 1b
+
+binomial GLM (response: presence/absence of nut-cracking site; predictors: raw materials, wild fruit trees, wild food THV, nest distance, river distance)
+
+
+
+### Variance inflation factors
+
+```{r}
+# Variance inflation factors
+
+vif(glm(TS_Pres ~ RM + Wfood_Fr + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF))
+```
+
+Observations
+
+- VIF < 1.4 for all variables, low-covariance
+- VIF within normal range, so all covariates can be used in the model
+
+
+
+```{r}
+Slc_GLM_M1b <- glm(as.factor(TS_Pres) ~ RM + Wfood_Fr + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF, family = binomial(link = "logit"))
+
+summary(Slc_GLM_M1b)
+
+```
+
+## Compare with null model
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1b <- anova(Slc_GLM_M1_Null, Slc_GLM_M1b, test = "LRT")
+
+AD_M1b
+```
+
+Observations:
+p < 0.05; can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1b <- drop1(Slc_GLM_M1b, test = "Chisq")
+
+d1_M1b
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1b <- fitted(Slc_GLM_M1b)
+Resid_M1b <- resid(Slc_GLM_M1b, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1b, y = Resid_M1b,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+
+Observations:
+
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#RM
+
+plot(x = Slc_NTQ_DF$RM,
+y = Resid_M1b,
+xlab = "RM",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#WFood_Fr
+
+plot(x = Slc_NTQ_DF$Wfood_Fr,
+y = Resid_M1b,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_THV
+
+plot(x = Slc_NTQ_DF$Wfood_THV,
+y = Resid_M1b,
+xlab = "Wfood_THV",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#River_dist
+
+plot(x = Slc_NTQ_DF$River_dist,
+y = Resid_M1b,
+xlab = "River_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Nest_dist
+
+plot(x = Slc_NTQ_DF$Nest_dist,
+y = Resid_M1b,
+xlab = "Nest_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for one extreme value (same as previous models)
+
+
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Slc_GLM_M1b),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+Observations:
+
+- CD < 0.4; No evidence of influential observations; pattern similar to M1
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1b <- tidy(Slc_GLM_M1b)
+
+# replace statistic and p with values from drop1
+
+Tab_M1b$statistic <- d1_M1b$LRT
+
+Tab_M1b$p.value <- d1_M1b$`Pr(>Chi)`
+
+Tab_M1b <- Tab_M1b %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1b
+
+#create table
+
+Slc_Tab_M1b <- flextable(Tab_M1b)
+
+print(Slc_Tab_M1b, preview = "docx")
+
+```
+
+#Model 1c
+
+binomial GLM (response: presence/absence of nut-cracking site; predictors: raw materials S3-S5, wild fruit trees, wild food THV, nest distance, river distance)
+
+
+```{r}
+# Variance inflation factors
+
+vif(glm(TS_Pres ~ RM_S3_S5 + Wfood_Fr + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF))
+```
+
+Observations
+
+- VIF < 1.4 for all variables, low-covariance
+- VIF within normal range, so all covariates can be used in the model
+
+
+
+```{r}
+Slc_GLM_M1c <- glm(as.factor(TS_Pres) ~ RM_S3_S5 + Wfood_Fr + Wfood_THV + Nest_dist + River_dist, data = Slc_NTQ_DF, family = binomial(link = "logit"))
+
+summary(Slc_GLM_M1c)
+
+```
+
+## Compare with null model
+
+```{r}
+
+# anova Null vs. Full model
+
+AD_M1c <- anova(Slc_GLM_M1_Null, Slc_GLM_M1c, test = "LRT")
+
+AD_M1c
+```
+
+Observations:
+p < 0.05; can reject null model.
+
+
+## Likelihood ratio test of main effects
+
+```{r}
+# drop1
+
+d1_M1c <- drop1(Slc_GLM_M1c, test = "Chisq")
+
+d1_M1c
+```
+
+## Graphical validation
+
+### Homogeneity of variance 
+
+```{r}
+#Pearson vs. fitted residuals
+
+Fitted_M1c <- fitted(Slc_GLM_M1c)
+Resid_M1c <- resid(Slc_GLM_M1c, type = "pearson")
+par(mfrow = c(1,1), mar = c(5,5,2,2), cex.lab = 1.2)
+plot(x = Fitted_M1c, y = Resid_M1c,
+xlab = "Fitted values",
+ylab = "Pearson Residuals")
+abline(h = 0, lty = 2)
+```
+Observations:
+- Distribution of residuals is consistent along the horizontal axis
+
+### Model misfit
+
+```{r}
+# Pearson residuals vs. covariates
+
+#RM
+
+plot(x = Slc_NTQ_DF$RM_S3_S5,
+y = Resid_M1c,
+xlab = "RM",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#WFood_Fr
+
+plot(x = Slc_NTQ_DF$Wfood_Fr,
+y = Resid_M1c,
+xlab = "Wfood_2DBH",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Wfood_THV
+
+plot(x = Slc_NTQ_DF$Wfood_THV,
+y = Resid_M1c,
+xlab = "Wfood_THV",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#River_dist
+
+plot(x = Slc_NTQ_DF$River_dist,
+y = Resid_M1c,
+xlab = "River_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+```{r}
+#Nest_dist
+
+plot(x = Slc_NTQ_DF$Nest_dist,
+y = Resid_M1c,
+xlab = "Nest_dist",
+ylab = "Pearson residuals",
+pch = 16, cex = 1.5)
+abline(h = 0, lty = 2)
+
+```
+
+Observations:
+
+- Distributions for all covariates show no obvious patterns for the residuals, except for one extreme value (same as previous models)
+
+
+
+### Absence of influentia observations
+
+```{r}
+#Cook's distance
+
+par(mfrow = c(1, 1))
+plot(cooks.distance(Slc_GLM_M1c),
+xlab = "Observation",
+ylab = "Cook's distance",
+type = "h",
+ylim = c(0, 1.1),
+cex.lab = 1.5)
+abline(h = 1, lty = 2)
+```
+
+"Cook distance larger than 1 (...) is the threshold value upon [which] one should take further action (Fox, 2002)" (Zuur et al. 2009, p. 27)
+
+Observations:
+
+- CD < 0.5; No evidence of influential observations; pattern similar to M1
+- Model validation has shown no evidence of model misfit, model residuals are acceptable and there are no influential observations
+
+
+## Summary Table
+
+### Make table with drop1 results
+
+```{r}
+# create df from glm results
+
+Tab_M1c <- tidy(Slc_GLM_M1c)
+
+# replace statistic and p with values from drop1
+
+Tab_M1c$statistic <- d1_M1c$LRT
+
+Tab_M1c$p.value <- d1_M1c$`Pr(>Chi)`
+
+Tab_M1c <- Tab_M1c %>% mutate_if(is.numeric, round, 3)
+
+Tab_M1c
+
+#create table
+
+Slc_Tab_M1c <- flextable(Tab_M1c)
+
+print(Slc_Tab_M1c, preview = "docx")
+
+```
+
+
+
+# Compare models
+
+## Full-Null summary
+
+```{r}
+# ANOVA
+
+Slc_ANOVA <- bind_rows("Slc_GLM_M1" = tidy(AD_M1), "Slc_GLM_M1a" = tidy(AD_M1a), "Slc_GLM_M1b" = tidy(AD_M1b), "Slc_GLM_M1c" = tidy(AD_M1c), .id = "Model")
+
+Slc_ANOVA <- Slc_ANOVA %>% mutate_if(is.numeric, round, 3)
+
+Slc_Tab_ANOVA <- flextable(Slc_ANOVA)
+
+print(Slc_Tab_ANOVA, preview = "docx")
+
+Slc_ANOVA 
+
+```
+
+
+## AIC for small sample size 
+
+[see Burnham and Anderson, 2002]
+
+```{r}
+# AICc
+
+Slc_AIC <- AICc(Slc_GLM_M1, Slc_GLM_M1a, Slc_GLM_M1b, Slc_GLM_M1c)
+
+Slc_AIC <- Slc_AIC %>% mutate(Model = rownames(Slc_AIC)) %>% relocate(Model, .before = "df") %>% mutate_if(is.numeric, round, 3)
+
+Slc_Tab_AIC <- flextable(Slc_AIC)
+
+print(Slc_Tab_AIC, preview = "docx")
+
+```
+
+Slc_GLM_M1a has the lowest AICc - selected as the final model
+
+# Final Model - M1a 
+
+## Plots
+
+```{r}
+# RM
+
+Pl_M1a_RM <- visreg(Slc_GLM_M1a, "RM_S3_S5", scale = "response",
+                      partial=FALSE, jitter = TRUE, alpha=0.1, 
+                      line = list (col = "grey20"), 
+                      fill = list (fill = "grey90"), 
+                      gg = TRUE) +
+                geom_point(colour = "grey20", shape = 16) + theme_BMS() + 
+                xlab("Number of raw materials \n (size class 3-5)") + ylab("Odds of tool site presence") +
+                scale_x_continuous()
+
+
+Pl_M1a_RM
+
+```
+
+```{r}
+# Trees
+
+Pl_M1a_Tree <- visreg(Slc_GLM_M1a, "Wfood_2DBH", scale = "response",
+                        partial=FALSE, jitter = TRUE, alpha=0.1, 
+                        line = list (col = "grey20"), 
+                        fill = list (fill = "grey90"),
+                        gg = TRUE) +
+                  geom_point(colour = "grey20", shape = 16) + theme_BMS() + 
+                  xlab("Number of food trees") + ylab("Odds of tool site presence") +
+                  scale_x_continuous(breaks = c(0,2,4,6,8,10,12))
+
+Pl_M1a_Tree
+
+```
+
+```{r}
+# Nest
+
+Pl_M1a_Nest <- visreg(Slc_GLM_M1a, "Nest_dist", scale = "response",
+                        partial=FALSE, jitter = TRUE, alpha=0.1, 
+                        line = list (col = "grey20"), 
+                        fill = list (fill = "grey90"), 
+                        gg = TRUE) +
+                  geom_point(colour = "grey20", shape = 16) + theme_BMS() + 
+                  xlab("Distance to nearest\n nest cluster (km)") + ylab("Odds of tool site presence") + 
+                  scale_y_continuous(limits = c(0,1)) +
+                  scale_x_continuous(breaks = c(0,200,400,600,800), label = c(0, 0.2, 0.4, 0.6, 0.8))
+
+Pl_M1a_Nest
+
+```
+
+```{r}
+# Facet plots
+
+Pl_M1a <- ggarrange(Pl_M1a_RM, Pl_M1a_Tree, Pl_M1a_Nest,
+                   ncol = 3, labels = c("a", "b", "c"),
+                   legend = NULL,
+                       align = "h",
+                       hjust = -0.8)
+
+Pl_M1a
+
+ggsave("TS_Slc_M1a.tiff", Pl_M1a, type = "cairo", scale = 3, width = 3, height = 1.8, dpi = 300)
+```
+
+```
+
